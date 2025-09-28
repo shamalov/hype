@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hype",
+  "main": "src/index.js",
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS"
+  },
+  "compatibility_date": "2025-09-27",
+  "kv_namespaces": [
+    {
+      "binding": "CHAT_KV",
+      "id": "565278bc6e8a4f4f891c5fd2059d9e78"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHAT_ROOM",
+        "class_name": "ChatRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChatRoom"]
+    }
+  ]
+}

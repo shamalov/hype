@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Live Twitch Rooms</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      background: #0e0e0e;
+      color: #ffffff;
+      font-family: system-ui, sans-serif;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      padding: 16px;
+      height: 100vh;
+      box-sizing: border-box;
+      overflow: auto;
+    }
+    .panel {
+      background: #161616;
+      border: 1px solid #242424;
+      border-radius: 6px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .panel h2 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+    .log {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      background: #0f0f0f;
+      border: 1px solid #1f1f1f;
+      border-radius: 4px;
+      padding: 8px;
+      white-space: pre-wrap;
+      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+    .log div { margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="grid" id="grid"></div>
+
+  <script>
+    const channels = [
+      { slug: 'kaicenat', label: 'Kai Cenat' },
+      { slug: 'ishowspeed', label: 'IShowSpeed' },
+      { slug: 'agent00', label: 'Agent 00' },
+      { slug: 'joe_bartolozzi', label: 'Joe Bartolozzi' },
+      { slug: 'extraemily', label: 'ExtraEmily' },
+    ];
+
+    const grid = document.getElementById('grid');
+    const sockets = new Map();
+    const logs = new Map();
+
+    const colors = {
+      'twitch-message': '#ffffff',
+      hype: '#7fffa1',
+      info: '#9ac7ff',
+      error: '#ff8a8a',
+      message: '#ffffff',
+    };
+
+    function defaultUrl(room) {
+      return `wss://${location.host}/connect/${room}`;
+    }
+
+    function appendLine(room, type, msg) {
+      const log = logs.get(room);
+      if (!log) return;
+      const time = new Date().toLocaleTimeString();
+      const color = colors[type] || colors.message;
+      const line = document.createElement('div');
+      line.innerHTML = `<span style="color:#777">[${time}]</span> <span style="color:${color}">${msg}</span>`;
+      log.appendChild(line);
+      const maxLines = 200;
+      while (log.children.length > maxLines) {
+        log.removeChild(log.firstChild);
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function scheduleReconnect(room) {
+      const info = sockets.get(room);
+      if (!info) return;
+      clearTimeout(info.timer);
+      info.timer = setTimeout(() => connect(room, true), info.delay);
+      info.delay = Math.min(info.delay * 2, 30_000);
+      appendLine(room, 'error', `reconnecting in ${Math.round(info.delay / 1000)}s…`);
+    }
+
+    function connect(room, auto = false) {
+      const url = defaultUrl(room);
+      let info = sockets.get(room);
+      if (!info) {
+        info = { delay: 1000, timer: null, ws: null };
+        sockets.set(room, info);
+      } else {
+        if (info.ws && (info.ws.readyState === WebSocket.OPEN || info.ws.readyState === WebSocket.CONNECTING)) {
+          try { info.ws.close(1000, 'Reconnecting'); } catch (_) {}
+        }
+        clearTimeout(info.timer);
+      }
+
+      try {
+        info.ws = new WebSocket(url);
+      } catch (err) {
+        appendLine(room, 'error', `connect failed: ${err.message}`);
+        scheduleReconnect(room);
+        return;
+      }
+
+      appendLine(room, 'info', `${auto ? 'auto-connecting' : 'connecting'}…`);
+
+      info.ws.addEventListener('open', () => {
+        info.delay = 1000;
+        appendLine(room, 'info', 'connected');
+      });
+
+      info.ws.addEventListener('message', (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'twitch-message') {
+            appendLine(room, 'twitch-message', `${payload.user}: ${payload.text}`);
+          } else if (payload.type === 'hype') {
+            const trend = payload.trendTop?.map((t) => `${t.term}×${t.count}`).join(', ') || '—';
+            appendLine(room, 'hype', `HYPE! count=${payload.count} threshold=${payload.threshold} trend=[${trend}]`);
+          } else {
+            appendLine(room, 'message', event.data);
+          }
+        } catch (_) {
+          appendLine(room, 'message', event.data);
+        }
+      });
+
+      info.ws.addEventListener('close', (event) => {
+        appendLine(room, 'info', `disconnected (code ${event.code})`);
+        if (event.code !== 1000) {
+          scheduleReconnect(room);
+        }
+      });
+
+      info.ws.addEventListener('error', () => {
+        appendLine(room, 'error', 'websocket error');
+      });
+    }
+
+    function buildPanels() {
+      channels.forEach(({ slug, label }) => {
+        const panel = document.createElement('div');
+        panel.className = 'panel';
+
+        const title = document.createElement('h2');
+        title.textContent = label;
+
+        const log = document.createElement('div');
+        log.className = 'log';
+        log.dataset.room = slug;
+
+        panel.appendChild(title);
+        panel.appendChild(log);
+        grid.appendChild(panel);
+
+        logs.set(slug, log);
+      });
+    }
+
+    buildPanels();
+
+    window.addEventListener('load', () => {
+      channels.forEach(({ slug }) => connect(slug, true));
+    });
+  </script>
+</body>
+</html>
