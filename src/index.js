@@ -4,9 +4,7 @@ const TWITCH_IRC_URL = 'https://irc-ws.chat.twitch.tv/';
 const USER_TOKEN_KEY = 'twitch:user-token';
 const DEFAULT_REDIRECT_URI = 'http://localhost';
 const BOT_NICK = 'awesomeeric';
-const CHANNELS = ['#kaicenat', '#ishowspeed', '#agent00', '#joe_bartolozzi', '#extraemily'];
-const CHANNEL_SET = new Set(CHANNELS.map((c) => c.toLowerCase()));
-const DEFAULT_ROOM = CHANNELS[0].slice(1);
+const CHANNELS_DEFAULT = ['kaicenat', 'ishowspeed', 'agent00', 'joe_bartolozzi', 'extraemily'];
 const TOKEN_EXPIRY_BUFFER_MS = 10 * 60 * 1000;
 const MIN_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
@@ -21,13 +19,29 @@ export default {
       return handleCodeExchange(request, env);
     }
 
+    if (url.pathname === '/channels.json') {
+      const channels = getConfiguredChannels(env);
+      return new Response(JSON.stringify({ channels }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+        },
+      });
+    }
+
     if (url.pathname.startsWith('/connect/')) {
       if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
         return new Response('Expected WebSocket upgrade', { status: 400 });
       }
-      const room = sanitizeRoom(url.pathname.slice('/connect/'.length)) || DEFAULT_ROOM;
-      const channelKey = `#${room}`;
-      if (!CHANNEL_SET.has(channelKey)) {
+      const channels = getConfiguredChannels(env);
+      if (channels.length === 0) {
+        return new Response('No channels configured', { status: 500 });
+      }
+      const allowed = new Set(channels);
+      const defaultRoom = channels[0];
+      const room = sanitizeRoom(url.pathname.slice('/connect/'.length), defaultRoom);
+      if (!room || !allowed.has(room)) {
         return new Response('Unknown channel', { status: 404 });
       }
       const id = env.CHAT_ROOM.idFromName(room);
@@ -69,9 +83,12 @@ async function handleCodeExchange(request, env) {
 }
 
 async function ensureTwitchLoop(env) {
+  const channels = getConfiguredChannels(env);
+  if (channels.length === 0) {
+    return;
+  }
   await Promise.all(
-    CHANNELS.map(async (channel) => {
-      const room = channel.slice(1);
+    channels.map(async (room) => {
       const id = env.CHAT_ROOM.idFromName(room);
       await env.CHAT_ROOM.get(id).fetch(`https://ensure?channel=${room}`, { method: 'POST' });
     })
@@ -88,16 +105,20 @@ export class ChatRoom {
     this.bucketState = new Map();
     this.channel = null;
     this.roomName = null;
+    this.allowedChannels = null;
+    this.allowedSet = null;
     this.state.waitUntil(seedUserTokenIfNeeded(env));
   }
 
   setChannel(room) {
-    const slug = sanitizeRoom(room || DEFAULT_ROOM);
+    const allowed = this.getAllowedChannels();
+    const defaultRoom = allowed[0];
+    const slug = sanitizeRoom(room, defaultRoom);
     if (!slug) {
       return false;
     }
     const channel = `#${slug}`;
-    if (!CHANNEL_SET.has(channel)) {
+    if (!this.allowedSet.has(slug)) {
       console.warn('Channel not permitted', channel);
       return false;
     }
@@ -110,9 +131,18 @@ export class ChatRoom {
     return true;
   }
 
+  getAllowedChannels() {
+    if (!this.allowedChannels) {
+      const channels = getConfiguredChannels(this.env);
+      this.allowedChannels = channels.length ? channels : [...CHANNELS_DEFAULT];
+      this.allowedSet = new Set(this.allowedChannels);
+    }
+    return this.allowedChannels;
+  }
+
   async fetch(request) {
     const url = new URL(request.url);
-    const room = extractRoom(url) || DEFAULT_ROOM;
+    const room = extractRoom(url, this.getAllowedChannels()[0]);
     if (!this.setChannel(room)) {
       return new Response('Unknown channel', { status: 404 });
     }
@@ -665,22 +695,33 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function sanitizeRoom(value) {
-  if (!value) {
-    return null;
-  }
-  const slug = value.trim().toLowerCase().replace(/^#/, '');
+function sanitizeSlug(value) {
+  if (value === undefined || value === null) return null;
+  const slug = String(value).trim().toLowerCase().replace(/^#/, '');
   return slug || null;
 }
 
-function extractRoom(url) {
-  const fromParam = sanitizeRoom(url.searchParams.get('channel'));
-  if (fromParam) {
-    return fromParam;
-  }
+function sanitizeRoom(value, fallback) {
+  return sanitizeSlug(value) || fallback || null;
+}
+
+function extractRoom(url, fallback) {
+  const fromParam = sanitizeSlug(url.searchParams.get('channel'));
+  if (fromParam) return fromParam;
   const parts = url.pathname.split('/').filter(Boolean);
-  if (parts.length === 0) {
-    return null;
+  if (parts.length === 0) return fallback || null;
+  return sanitizeSlug(parts[parts.length - 1]) || fallback || null;
+}
+
+function getConfiguredChannels(env) {
+  const override = env.TOP_TWITCH_CHANNELS;
+  if (!override) {
+    return [...CHANNELS_DEFAULT];
   }
-  return sanitizeRoom(parts[parts.length - 1]);
+  const parsed = String(override)
+    .split(/[\s,]+/)
+    .map(sanitizeSlug)
+    .filter(Boolean);
+  const unique = Array.from(new Set(parsed));
+  return unique.length ? unique : [...CHANNELS_DEFAULT];
 }
